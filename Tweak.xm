@@ -2,37 +2,27 @@
 //  Keyboard Rounded Corners  (com.tsangbaby.kbrc)
 //  iOS 15+
 //
-//  作用：把系统键盘面板（模糊背板 / 背景板）裁成圆角卡片，四个角都圆。
+//  作用：把系统键盘里的每个键位（keycap）裁成连续圆角。
 //
-//  为什么用「运行时枚举 + 几何过滤」而不是直接 %hook UIKBBackdropView：
-//    键盘背板类在 iOS 15 → 18 之间被改过名、部分实现还从 UIKitCore 挪进了 TextInputUI，
-//    写死类名只会在某些系统上静默失效（连日志都没有）。这里改成：
-//      ① 枚举所有类，取「名字含 UIKB / UIKeyboard / TUIKeyboard」且「含 Backdrop / BackgroundView」的；
-//      ② 对它们各自的 layoutSubviews 做 swizzle（只动类自己实现了 layoutSubviews 的，避免污染父类）；
-//      ③ 布局完成后再用几何条件确认「这确实是一整块键盘面板」才施加圆角。
-//    改名、换框架都不影响，最坏情况是枚举不到 → 日志里会明确告诉你。
+// 目标是 UIKBKeyView / UIKBContainerKeyView 这一层的键帽视图，而不是 UIKBBackdropView。
+// 键盘背板决定整块键盘的外框；键位视图才是图片中每个字母键、功能键和
+// 空格键的白色/灰色圆角背景。
 //
-
+// 运行时只选取明确的系统键帽类名（兼顾 UIKitCore 与 TextInputUI 命名），
+// 再替换类自己实现的无参数生命周期入口；不会把 UIView 通用方法改掉，
+// 也不会再误伤整块键盘背板。
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #import <string.h>
 #import <stdlib.h>
+#import <math.h>
 #import <substrate.h>
+#import "KBRCKeyGeometry.h"
 
 // ============================================================================
-//  可调参数
+//  调试日志：make package DEBUG=1 打开
 // ============================================================================
-
-/// 圆角半径（pt）。想要更圆就调大，系统级观感一般 10~14。
-static const CGFloat kKBRCCornerRadius = 12.0;
-
-/// 只有「宽度 ≥ 屏宽 × 该比例」且「高度 ≥ kKBRCMinHeight」的视图才被当作键盘面板。
-/// 这条是安全阀：避免误伤键盘内部的小背板、候选栏、单个按键。
-static const CGFloat kKBRCMinScreenWidthRatio = 0.80;
-static const CGFloat kKBRCMinHeight = 120.0;
-
-/// 调试日志：make package DEBUG=1 打开。会打印命中的类名与所有候选类，用于真机定位。
 #ifndef KBRC_DEBUG
 #define KBRC_DEBUG 0
 #endif
@@ -53,7 +43,7 @@ typedef struct {
     IMP orig;
 } KBRCHookEntry;
 
-static KBRCHookEntry gEntries[32];
+static KBRCHookEntry gEntries[64];
 static int gEntryCount = 0;
 
 static IMP KBRCOriginalFor(Class cls, SEL sel) {
@@ -75,48 +65,52 @@ static BOOL KBRCIsHooked(Class cls, SEL sel) {
 }
 
 // ============================================================================
-//  施加圆角
+//  施加键位圆角
 // ============================================================================
 
-/// 返回 YES 表示「已经处理过这个视图」（无论这次是否新设置了圆角）
-static BOOL KBRCApplyCornerRadius(UIView *view) {
+/// 只对已经由类名过滤确认的键位视图调用，不再使用整块键盘的宽高门槛。
+static BOOL KBRCApplyKeyCapRadius(UIView *view) {
     if (view == nil) return NO;
 
     const CGRect bounds = view.bounds;
-    const CGSize screen = UIScreen.mainScreen.bounds.size;
-    if (screen.width <= 0.0 || bounds.size.width <= 0.0) return NO;
-
-    if (bounds.size.width < screen.width * kKBRCMinScreenWidthRatio) return NO;
-    if (bounds.size.height < kKBRCMinHeight) return NO;
+    CGFloat radius = (CGFloat)KBRCKeyCapCornerRadiusForSize(
+        CGRectGetWidth(bounds), CGRectGetHeight(bounds));
+    if (radius <= 0.0) return NO;
 
     CALayer *layer = view.layer;
     if (layer == nil) return NO;
-    if (layer.cornerRadius == kKBRCCornerRadius && layer.masksToBounds) return YES;   // 已处理过
 
-    layer.cornerRadius = kKBRCCornerRadius;
-    layer.cornerCurve = kCACornerCurveContinuous;   // iOS 13+，圆角过渡更接近系统
+    if (fabs(layer.cornerRadius - radius) < 0.01 && layer.masksToBounds) {
+        return YES;   // 已处理过
+    }
+
+    layer.cornerRadius = radius;
+    layer.cornerCurve = kCACornerCurveContinuous;
     layer.masksToBounds = YES;
 
-    KBRCLog(@"rounded %s  %.0fx%.0f", class_getName(object_getClass(view)),
-            bounds.size.width, bounds.size.height);
+    KBRCLog(@"rounded keycap %s %.1fx%.1f radius=%.1f",
+            class_getName(object_getClass(view)),
+            CGRectGetWidth(bounds), CGRectGetHeight(bounds), radius);
     return YES;
 }
 
-/// 所有被 hook 的方法都走这里：先跑原实现，再尝试施加圆角
-static void KBRCViewDidLayout(id self, SEL _cmd) {
+/// 所有被 hook 的无参数布局方法都走这里：先跑原实现，再处理键位。
+static void KBRCKeyViewDidLayout(id self, SEL _cmd) {
     IMP orig = KBRCOriginalFor(object_getClass(self), _cmd);
     if (orig) {
         ((void (*)(id, SEL))orig)(self, _cmd);
     }
 
-    if (KBRCApplyCornerRadius((UIView *)self)) return;
+    if (KBRCApplyKeyCapRadius((UIView *)self)) return;
 
-    // didMoveToWindow 时机可能还没布局（bounds 仍是 0），下一帧再补一次
-    if (sel_isEqual(_cmd, @selector(didMoveToWindow))) {
+    // prepareForDisplay may run before the final keycap dimensions are set.
+    // Apply once more on the next main-queue turn in that case.
+    if (sel_isEqual(_cmd, @selector(didMoveToWindow)) ||
+        sel_isEqual(_cmd, @selector(prepareForDisplay))) {
         __weak UIView *weakView = (UIView *)self;
         dispatch_async(dispatch_get_main_queue(), ^{
             UIView *view = weakView;
-            if (view != nil) KBRCApplyCornerRadius(view);
+            if (view != nil) KBRCApplyKeyCapRadius(view);
         });
     }
 }
@@ -125,92 +119,108 @@ static void KBRCViewDidLayout(id self, SEL _cmd) {
 //  安装
 // ============================================================================
 
-static void KBRCInstallOnClass(Class cls) {
-    if (cls == Nil || gEntryCount >= 32) return;
+static BOOL KBRCIsVoidNoArgumentMethod(Method method) {
+    if (method == NULL || method_getNumberOfArguments(method) != 2) return NO;
 
-    // 优先 layoutSubviews；类自己没实现时才退回 didMoveToWindow
-    const SEL preferred[] = { @selector(layoutSubviews), @selector(didMoveToWindow) };
-
-    for (int s = 0; s < (int)(sizeof(preferred) / sizeof(preferred[0])); s++) {
-        SEL sel = preferred[s];
-        if (KBRCIsHooked(cls, sel)) return;
-
-        unsigned int count = 0;
-        Method target = NULL;
-        Method *list = class_copyMethodList(cls, &count);
-        for (unsigned int i = 0; i < count; i++) {
-            if (sel_isEqual(method_getName(list[i]), sel)) {
-                target = list[i];   // 只处理「类自己实现」的方法，不碰继承来的
-                break;
-            }
-        }
-        free(list);
-
-        if (target == NULL) continue;
-
-        gEntries[gEntryCount].cls = cls;
-        gEntries[gEntryCount].sel = sel;
-        gEntries[gEntryCount].orig = method_getImplementation(target);
-        gEntryCount++;
-
-        method_setImplementation(target, (IMP)KBRCViewDidLayout);
-        KBRCLog(@"hooked -[%s %s]", class_getName(cls), sel_getName(sel));
-        return;   // 同一个类只挂一个入口即可
-    }
+    char returnType[8] = {0};
+    method_getReturnType(method, returnType, sizeof(returnType));
+    return strcmp(returnType, @encode(void)) == 0;
 }
 
-static BOOL KBRCNameLooksLikeKeyboardBackground(const char *name) {
-    if (name == NULL || name[0] == '\0') return NO;
+static void KBRCInstallOnClass(Class cls) {
+    if (cls == Nil) return;
 
-    const BOOL keyboardish = (strstr(name, "UIKB") != NULL) ||
-                             (strstr(name, "UIKeyboard") != NULL) ||
-                             (strstr(name, "TUIKeyboard") != NULL);
-    if (!keyboardish) return NO;
+    // Avoid installing the same selector on ancestor and subclass: calling
+    // super could otherwise re-enter the subclass wrapper. UIKBContainerKeyView
+    // derives from UIKBKeyView, so each owner receives a distinct entry point.
+    const char *className = class_getName(cls);
+    SEL preferred[1];
+    if (strcmp(className, "UIKBKeyView") == 0) {
+        preferred[0] = @selector(layoutSubviews);
+    } else if (strcmp(className, "UIKBContainerKeyView") == 0) {
+        preferred[0] = @selector(prepareForDisplay);
+    } else {
+        return;
+    }
 
-    return (strstr(name, "Backdrop") != NULL) || (strstr(name, "BackgroundView") != NULL);
+    const int capacity = (int)(sizeof(gEntries) / sizeof(gEntries[0]));
+    if (gEntryCount >= capacity || KBRCIsHooked(cls, preferred[0])) return;
+
+    unsigned int count = 0;
+    Method *list = class_copyMethodList(cls, &count);
+    if (list == NULL) return;
+
+    Method target = NULL;
+    for (unsigned int i = 0; i < count; i++) {
+        if (sel_isEqual(method_getName(list[i]), preferred[0]) &&
+            KBRCIsVoidNoArgumentMethod(list[i])) {
+            target = list[i];
+            break;
+        }
+    }
+    free(list);
+    if (target == NULL) return;
+
+    gEntries[gEntryCount].cls = cls;
+    gEntries[gEntryCount].sel = preferred[0];
+    gEntries[gEntryCount].orig = method_getImplementation(target);
+    gEntryCount++;
+
+    method_setImplementation(target, (IMP)KBRCKeyViewDidLayout);
+    KBRCLog(@"hooked keycap -[%s %s]", className, sel_getName(preferred[0]));
+}
+
+static BOOL KBRCNameLooksLikeKeyboardKey(const char *name) {
+    // UIKBKeyView draws classic keycaps. UIKBContainerKeyView is the
+    // container superclass used by floating and newer TextInputUI key views.
+    // Keep exact class matching to avoid backdrop, blur and helper views.
+    return name != NULL &&
+           (strcmp(name, "UIKBKeyView") == 0 ||
+            strcmp(name, "UIKBContainerKeyView") == 0);
 }
 
 static int KBRCInstallAll(void) {
     int total = objc_getClassList(NULL, 0);
-    if (total <= 0) return 0;
+    if (total <= 0) return gEntryCount;
 
     Class *classes = (Class *)malloc(sizeof(Class) * (size_t)total);
-    if (classes == NULL) return 0;
+    if (classes == NULL) return gEntryCount;
     total = objc_getClassList(classes, total);
 
     int matched = 0;
     for (int i = 0; i < total; i++) {
         const char *name = class_getName(classes[i]);
 #if KBRC_DEBUG
-        // 把所有「跟键盘沾边」的类都打出来：即使没命中，也能在日志里看到真名，
-        // 直接照着改 KBRCNameLooksLikeKeyboardBackground 即可
-        if (strstr(name, "Keyboard") != NULL || strstr(name, "UIKB") != NULL) {
-            KBRCLog(@"kb-class: %s", name);
+        // DEBUG 下列出键盘相关类，便于确认目标系统实际使用的 KeyView 名称。
+        if (strstr(name, "Keyboard") != NULL ||
+            strstr(name, "UIKB") != NULL ||
+            strstr(name, "TUI") != NULL) {
+            KBRCLog(@"keyboard-class: %s", name);
         }
 #endif
-        if (KBRCNameLooksLikeKeyboardBackground(name)) {
+        if (KBRCNameLooksLikeKeyboardKey(name)) {
             matched++;
             KBRCInstallOnClass(classes[i]);
         }
     }
     free(classes);
 
-    return matched;
+    KBRCLog(@"keycap scan: matched=%d hooked=%d", matched, gEntryCount);
+    return gEntryCount;
 }
 
 // ============================================================================
 //  入口
 // ============================================================================
 
-/// 极少见情况：本插件比 UIKitCore 更早加载，此时类还没注册完。
-/// 半秒后补一次即可；仍然失败只影响功能，不影响进程。
+/// 极少见情况：本插件比 UIKitCore/TextInputUI 更早加载，此时类还没注册完。
+/// 半秒后补一次；仍然失败只影响功能，不影响进程。
 static void KBRCScheduleRetry(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        // 注意：KBRCInstallAll() 不能写在 KBRCLog 的参数里——release 构建会把宏展开成空语句
-        int matched = KBRCInstallAll();
-        (void)matched;
-        KBRCLog(@"retry: matched %d classes", matched);
+        int hooked = KBRCInstallAll();
+        (void)hooked;
+        KBRCLog(@"retry: hooked %d keycap classes", hooked);
     });
 }
 

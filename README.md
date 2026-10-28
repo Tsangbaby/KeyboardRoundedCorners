@@ -1,6 +1,6 @@
 # Keyboard Rounded Corners
 
-给 iOS 系统键盘加上圆角，四个角都圆。iOS 15 及以上。
+给 iOS 系统键盘里的**每个独立键位 / 键帽**加连续圆角，例如字母键、数字键、功能键和空格键。目标效果是每个键帽各自圆角，不是把整块键盘外框裁成圆角。目标系统 iOS 15 及以上，实际类名与渲染方式仍需在目标设备验证。
 
 - 包名：`com.tsangbaby.kbrc`
 - 作者 / 维护者：Tsangbaby
@@ -10,23 +10,18 @@
 
 ## 一、它是怎么做的
 
+```text
+注入    kbrc.plist → Classes = UIKeyboardImpl
+发现    只匹配 UIKBKeyView 与 UIKBContainerKeyView 两个系统键帽类
+挂载    UIKBKeyView 自己实现的 layoutSubviews；容器类自己实现的 prepareForDisplay
+施加    原实现完成后，按键帽 bounds 短边的 25% 设置连续圆角，最高 14 pt，并裁剪键帽内容
 ```
-注入    kbrc.plist → Classes = UIKeyboardImpl（凡是会弹键盘的进程都注入）
-发现    运行时枚举所有类，取「名字含 UIKB / UIKeyboard / TUIKeyboard」
-        且「含 Backdrop / BackgroundView」的类 —— 也就是键盘的背板/底板
-挂载    对每个类「自己实现」的 layoutSubviews 做 swizzle（不碰继承来的，不污染父类）
-施加    布局完成后做几何确认：宽度 ≥ 屏宽×0.8、高度 ≥ 120 → 施加圆角 + 裁剪
-```
 
-### 为什么不直接 `%hook UIKBBackdropView`
+本实现的目标是单键帽视图，而不是 `UIKBBackdropView` 或 `UIKBBackgroundView` 这类键盘底板。`UIKBKeyView` / `UIKBContainerKeyView` 是 UIKit 私有实现；iOS 18 的 TextInputUI 键帽基类继承自 `UIKBContainerKeyView`，因此通过父类方法覆盖。类名、宿主进程、键帽渲染层级和生命周期都不是 Apple 对第三方承诺的公共 API，版本间可能变化。
 
-这是本次重写最关键的一个决定。键盘背板类在 iOS 15 → 18 之间**改过名**，部分实现还从 UIKitCore 挪进了 TextInputUI。写死类名会带来最糟糕的失败模式：**静默失效**——装上去毫无反应，也没有任何日志。
+圆角半径随键帽短边缩放：`min(短边 × 0.25, 14 pt)`。对示例图中约 33×42 pt 的字母键，得到约 8.25 pt；空格键宽而高较小，仍按其短边计算。
 
-所以改成「类名模式 + 几何双重过滤」：
-
-- 改名不要紧，只要还叫 `*Backdrop*` / `*BackgroundView*` 就能被枚举到；
-- 几何过滤保证「只可能是整块键盘面板」才动手，键盘内部的小背板、候选栏、单个按键一律跳过；
-- 真出问题时，`DEBUG=1` 的日志会直接列出**所有候选类**和**实际挂上的类**，不用猜。
+系统可能把键帽绘制到 `UIKBKeyView` 的 layer 内容或子 layer 中。代码在目标 view 的 layer 上设置 `cornerRadius` 并开启 `masksToBounds`，用于裁出独立键帽形状；如果某系统把阴影绘制在同一 view 边界之外，裁剪可能影响阴影表现，需要设备测试。
 
 ---
 
@@ -37,8 +32,10 @@
 ```bash
 export THEOS=~/theos
 make package FINALPACKAGE=1
-# 产物：packages/com.tsangbaby.kbrc_1.0.0_*.deb
+# 产物：packages/com.tsangbaby.kbrc_1.0.1_*.deb
 ```
+
+本仓库的 GitHub Actions 会在云端 macOS 上固定使用官方 [roothide/theos](https://github.com/roothide/theos) 构建 roothide 包。
 
 包形态在 `Makefile` 第一行切换（默认 roothide）：
 
@@ -53,11 +50,11 @@ make package FINALPACKAGE=1
 ## 三、安装与生效
 
 ```bash
-dpkg -i com.tsangbaby.kbrc_1.0.0_*.deb
+dpkg -i com.tsangbaby.kbrc_1.0.1_*.deb
 killall -9 SpringBoard
 ```
 
-装完后**重启目标 App** 才会重新注入（键盘在 App 进程内渲染，Respring 只刷新桌面）。然后随便点一个输入框，键盘应该变成圆角卡片。
+安装后需要重启实际输入的目标 App，使键盘进程重新加载 tweak。成功时应看到**每个独立键帽**都有自己的圆角，空格键、字母键、数字键和功能键分别保持各自形状；不是整块键盘背景只出现一个大外框圆角。图片示例中的键帽圆角比例约为短边的 1/4，代码上限为 14 pt。
 
 ---
 
@@ -69,15 +66,15 @@ make clean && make package FINALPACKAGE=1 DEBUG=1
 log stream --predicate 'eventMessage CONTAINS "[kbrc]"' --style compact
 ```
 
-日志会分三类：
+调试构建会把运行时类列表、键帽命中类、实际挂钩方法和半径写入统一的 `[kbrc]` 日志。重点查看：
 
-| 日志 | 含义 | 下一步 |
+| 日志 | 含义 | 判断 |
 |---|---|---|
-| `kb-class: XXX` | 你这台设备上**所有**跟键盘沾边的类（DEBUG 全量打印） | 从里面挑出像「背板/底板」的那个 |
-| `hooked -[XXX layoutSubviews]` | 实际挂上的类 | 一条都没有 → 注入没成功，或类名模式没覆盖到 |
-| `rounded XXX 390x291` | 圆角已施加 | 有这条但视觉没变 → 见「已知不确定项」第 2 条 |
+| `keyboard-class: UIKBKeyView` | 当前进程中注册了标准键帽类 | 无此行需确认该进程/系统是否使用此实现 |
+| `hooked keycap -[UIKBKeyView layoutSubviews]` 或 `hooked keycap -[UIKBContainerKeyView prepareForDisplay]` | 实际挂钩的键帽布局入口 | 应至少看到一个 `hooked keycap` |
+| `rounded keycap UIKBKeyView 33.0x42.0 radius=8.3` | 已对该键帽 view 的 layer 应用圆角 | 应能在画面上看到多个独立键帽各自圆角 |
 
-如果 `hooked` 一条都没有，就到 `kb-class` 里找真名，改 `Tweak.xm` 里的 `KBRCNameLooksLikeKeyboardBackground()`（比如把关键字换成 `Keyplane`、`Layout`、`Backdrop` 的组合），重新打包再看。
+若没有 `rounded keycap`，可能是注入筛选未命中，或目标系统没有使用 allowlist 中的类；若日志显示已处理但外观没变，系统可能通过独立渲染 layer 绘制键帽背景，需要采集目标设备的类/视图层级后再适配，不应再改键盘外框类。
 
 ---
 
@@ -85,23 +82,21 @@ log stream --predicate 'eventMessage CONTAINS "[kbrc]"' --style compact
 
 | 常量 | 默认 | 作用 |
 |---|---|---|
-| `kKBRCCornerRadius` | `12.0` | 圆角半径（pt） |
-| `kKBRCMinScreenWidthRatio` | `0.80` | 宽度 ≥ 屏宽×该值才算「整块键盘面板」 |
-| `kKBRCMinHeight` | `120.0` | 高度下限，挡住候选栏等窄条 |
+| `KBRCKeyCapCornerRadiusForSize` 的比例 | `0.25` | 键帽短边的四分之一 |
+| `KBRCKeyCapCornerRadiusForSize` 的上限 | `14.0 pt` | 防止大键位产生过度圆角 |
+| `KBRCKeyCapCornerRadiusForSize` 的最小短边 | `4.0 pt` | 跳过零尺寸或非键帽尺寸 |
 
-都在 `Tweak.xm` 顶部，改完重新打包即可。
+几何函数位于 `KBRCKeyGeometry.h`，有宿主侧单元测试覆盖；源代码类名和真实键帽渲染仍须在设备上验证。
 
 ---
 
 ## 六、已知不确定项（请当成待验证清单，不是免责声明）
 
-1. **背板类名是按公开资料 + 经验给的模式**，没有在你的设备上实跑过。第一次装包请务必按第四节看一遍日志。
-2. **如果日志显示 `rounded` 了但视觉仍是方角**，通常是「背板被圆了，但它外面还有一层方形的底色/分割层」。处理办法：把 `UIKBBackgroundView` 之外的容器类也纳入匹配（改 `KBRCNameLooksLikeKeyboardBackground` 的返回条件），或把 `kKBRCMinScreenWidthRatio` 调低一点让它也命中。
-3. **底部两个角会露出 App 内容**（这是你选的「四角全圆」的必然结果）。只想要顶部圆角的话，把 `KBRCApplyCornerRadius` 里的
-   `layer.cornerRadius = ...` 换成分象限的 `maskedCorners`（`kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner`）。
-4. **第三方键盘不受影响**：它们自绘 UI，不走系统背板类，本来也不该被改。
-5. **iPad 浮动/分屏键盘**：系统已经给了圆角，且宽度不足 0.8 屏宽，会被几何过滤跳过。
-6. **横屏**：几何条件用的是 `UIScreen.mainScreen.bounds`，横屏时宽度同步变化，逻辑一致。
+1. **私有类与渲染时机**：代码支持 UIKitCore 的 `UIKBKeyView` 与 `UIKBContainerKeyView`；部分较新 TextInputUI 键帽基类继承自这些 UIKit 类。它们都不是 Apple 的公共 API。目标 iOS 版本可能改用其他类或将键帽绘制到其他 layer。
+2. **键帽 layer 结构**：目前对键帽 view 的主 layer 设置 `cornerRadius` 和 `masksToBounds`。若系统把阴影放在同一 layer 的边界外，阴影可能被裁掉；若键帽面是外部 atlas，日志会显示已处理但视觉可能不变。
+3. **键盘状态**：键帽重用、按下/弹起、切换语言、候选栏、横竖屏和深色模式都可能重新生成或重置渲染，需要在目标设备逐项测试。
+4. **第三方键盘**：第三方键盘自绘，通常不使用这些系统类，不保证受影响。
+5. **设备验证边界**：本次修复可以在云端验证 arm64/arm64e 编译和包结构，但没有设备安装、注入日志或视觉回归，因此不能把云构建当成功能验收。
 
 ---
 
@@ -109,10 +104,13 @@ log stream --predicate 'eventMessage CONTAINS "[kbrc]"' --style compact
 
 ```
 Makefile                    构建（arm64 + arm64e，minos 15.0）
-Tweak.xm                    全部实现（约 200 行，含注释）
+Tweak.xm                    键帽运行时 Hook 与圆角处理
+KBRCKeyGeometry.h           键帽圆角纯几何策略（供源码与测试共用）
+tests/key_geometry_test.c   几何边界单元测试
+tests/check_keycap_contract.py 键帽目标与禁止误钩的静态保护
 kbrc.plist                  MobileSubstrate 过滤器
 control                     Debian 包描述
-.github/workflows/build.yml 云端 macOS 构建
+.github/workflows/build.yml 云端 macOS roothide 构建与测试
 ```
 
 ---
@@ -121,4 +119,5 @@ control                     Debian 包描述
 
 | 版本 | 说明 |
 |---|---|
-| 1.0.0 | 首版。键盘面板四角圆角，iOS 15+ |
+| 1.0.0 | 初始实现曾将键盘背板作为圆角对象，未达到逐个键帽圆角的目标 |
+| 1.0.1 | 改为针对 UIKBKeyView 键帽；按短边比例计算圆角，增加几何与目标类回归测试 |

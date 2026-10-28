@@ -1,8 +1,8 @@
 Package: com.tsangbaby.kbrc
 Name: Keyboard Rounded Corners
-Description: Gives the iOS keyboard rounded corners. Works on iOS 15 and later.
+Description: Gives each iOS system keyboard keycap continuous rounded corners. Works on iOS 15 and later.
 Maintainer: Tsangbaby
 Author: Tsangbaby
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000)
-Version: 1.0.0
+Version: 1.0.1

@@ -16,6 +16,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test keycap geometry and targeting
+        run: |
+          set -euo pipefail
+          cc -std=c11 -Wall -Wextra -Werror tests/key_geometry_test.c -lm -o "$RUNNER_TEMP/kbrc-key-geometry-test"
+          "$RUNNER_TEMP/kbrc-key-geometry-test"
+          python3 tests/check_keycap_contract.py
+
       - name: Setup pinned roothide Theos
         env:
           THEOS: ${{ runner.temp }}/theos
