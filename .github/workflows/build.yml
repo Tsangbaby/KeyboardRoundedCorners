@@ -1,0 +1,37 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: "带诊断日志构建（KBRC_DEBUG=1）"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # roothide 形态请把这一步换成 https://github.com/roothide/theos
+      - name: Setup Theos
+        uses: Randomblock1/theos-action@v1
+
+      - name: Build
+        run: |
+          make clean || true
+          if [ "${{ inputs.debug }}" = "true" ]; then
+            make package FINALPACKAGE=1 DEBUG=1
+          else
+            make package FINALPACKAGE=1
+          fi
+
+      - run: ls -la packages/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kbrc-deb
+          path: packages/*.deb
