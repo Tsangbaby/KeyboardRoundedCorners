@@ -225,8 +225,10 @@ static void KBRCScheduleRetry(void) {
     });
 }
 
-%ctor {
-    if (KBRCInstallAll() == 0) {
+    KBRCLog(@"loaded bundle=%@ process=%@",
+            NSBundle.mainBundle.bundleIdentifier ?: @"(nil)",
+            NSProcessInfo.processInfo.processName);
+    int hooked = KBRCInstallAll();
+    if (hooked == 0) {
         KBRCScheduleRetry();
     }
-}

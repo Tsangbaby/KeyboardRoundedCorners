@@ -11,13 +11,15 @@
 ## 一、它是怎么做的
 
 ```text
-注入    kbrc.plist → Classes = UIKeyboardImpl
-发现    只匹配 UIKBKeyView 与 UIKBContainerKeyView 两个系统键帽类
+注入    kbrc.plist → Bundles = com.apple.UIKit
+发现    注入进程里只匹配 UIKBKeyView 与 UIKBContainerKeyView 两个键帽类
 挂载    UIKBKeyView 自己实现的 layoutSubviews；容器类自己实现的 prepareForDisplay
 施加    原实现完成后，按键帽 bounds 短边的 25% 设置连续圆角，最高 14 pt，并裁剪键帽内容
 ```
 
-本实现的目标是单键帽视图，而不是 `UIKBBackdropView` 或 `UIKBBackgroundView` 这类键盘底板。`UIKBKeyView` / `UIKBContainerKeyView` 是 UIKit 私有实现；iOS 18 的 TextInputUI 键帽基类继承自 `UIKBContainerKeyView`，因此通过父类方法覆盖。类名、宿主进程、键帽渲染层级和生命周期都不是 Apple 对第三方承诺的公共 API，版本间可能变化。
+`Bundles = com.apple.UIKit` 是动态库注入过滤条件；它不是 `UIKeyboardImpl` 的类存在检查，也不是把 UIKit.framework 链接进 tweak。公开的系统键盘主题插件 [OledKeyboard](https://github.com/dayanch96/OledKeyboard/blob/main/OledKeyboard.plist) 也使用这个 Bundle filter。其他键盘 tweak 的目标可能不同，例如 [FlicksForAll](https://github.com/Treeki/FlicksForAll/blob/master/flickplus.plist) 选择 `com.apple.TextInput`；因此不把某一个过滤器概括成所有插件都相同。
+
+注入之后，本 tweak 仍只对单键帽类做运行时 Hook，而不是对键盘底板 `UIKBBackdropView` / `UIKBBackgroundView` 做圆角。`UIKBKeyView` / `UIKBContainerKeyView` 是 UIKit 私有实现；iOS 18 的 TextInputUI 键帽基类继承自 `UIKBContainerKeyView`。类名、宿主进程、键帽渲染层级和生命周期不是 Apple 对第三方承诺的公共 API，版本间可能变化。
 
 圆角半径随键帽短边缩放：`min(短边 × 0.25, 14 pt)`。对示例图中约 33×42 pt 的字母键，得到约 8.25 pt；空格键宽而高较小，仍按其短边计算。
 
@@ -32,7 +34,7 @@
 ```bash
 export THEOS=~/theos
 make package FINALPACKAGE=1
-# 产物：packages/com.tsangbaby.kbrc_1.0.1_*.deb
+# 产物：packages/com.tsangbaby.kbrc_1.0.2_*.deb
 ```
 
 本仓库的 GitHub Actions 会在云端 macOS 上固定使用官方 [roothide/theos](https://github.com/roothide/theos) 构建 roothide 包。
@@ -50,7 +52,7 @@ make package FINALPACKAGE=1
 ## 三、安装与生效
 
 ```bash
-dpkg -i com.tsangbaby.kbrc_1.0.1_*.deb
+dpkg -i com.tsangbaby.kbrc_1.0.2_*.deb
 killall -9 SpringBoard
 ```
 
@@ -121,3 +123,4 @@ control                     Debian 包描述
 |---|---|
 | 1.0.0 | 初始实现曾将键盘背板作为圆角对象，未达到逐个键帽圆角的目标 |
 | 1.0.1 | 改为针对 UIKBKeyView 键帽；按短边比例计算圆角，增加几何与目标类回归测试 |
+| 1.0.2 | 注入过滤改为 `Bundles = com.apple.UIKit`，增加 Bundle filter 静态断言和进程诊断日志 |

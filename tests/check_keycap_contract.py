@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Static guardrails for the individual-keycap-only hook target."""
 from pathlib import Path
+import plistlib
 import re
 
 root = Path(__file__).resolve().parents[1]
 source = (root / "Tweak.xm").read_text()
+filter_plist = plistlib.loads((root / "kbrc.plist").read_bytes())
+filter_dict = filter_plist.get("Filter", {})
+assert filter_dict.get("Bundles") == ["com.apple.UIKit"], filter_dict
+assert "Classes" not in filter_dict, "injection must target UIKit bundle, not class presence"
+assert "Executables" not in filter_dict, "do not add process-name restriction"
 
 assert 'strcmp(name, "UIKBKeyView") == 0' in source
 assert 'strcmp(name, "UIKBContainerKeyView") == 0' in source

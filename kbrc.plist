@@ -4,15 +4,9 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<!--
-		  按「类是否存在」注入：
-		  UIKeyboardImpl 是 UIKitCore 里最老牌、iOS 2 至今未改名的键盘类之一，
-		  任何会弹键盘的进程（各 App / SpringBoard）在 dyld 阶段就已经注册了它。
-		  只写一个类名，避免不同注入器对「多个类是与还是或」的语义差异。
-		-->
-		<key>Classes</key>
+		<key>Bundles</key>
 		<array>
-			<string>UIKeyboardImpl</string>
+			<string>com.apple.UIKit</string>
 		</array>
 	</dict>
 </dict>
