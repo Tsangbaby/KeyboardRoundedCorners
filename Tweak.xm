@@ -225,6 +225,7 @@ static void KBRCScheduleRetry(void) {
     });
 }
 
+%ctor {
     KBRCLog(@"loaded bundle=%@ process=%@",
             NSBundle.mainBundle.bundleIdentifier ?: @"(nil)",
             NSProcessInfo.processInfo.processName);
@@ -232,3 +233,4 @@ static void KBRCScheduleRetry(void) {
     if (hooked == 0) {
         KBRCScheduleRetry();
     }
+}
