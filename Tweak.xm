@@ -205,6 +205,7 @@ static int KBRCInstallAll(void) {
     }
     free(classes);
 
+    (void)matched;  // KBRCLog compiles out in non-debug builds.
     KBRCLog(@"keycap scan: matched=%d hooked=%d", matched, gEntryCount);
     return gEntryCount;
 }
