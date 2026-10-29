@@ -1,4 +1,15 @@
+# Theos 构建产物
 .theos/
 packages/
 *.deb
+
+# 编译中间件
+*.o
+*.dylib
+*.log
+
+# 编辑器 / 系统
 .DS_Store
+Thumbs.db
+.vscode/
+.idea/
