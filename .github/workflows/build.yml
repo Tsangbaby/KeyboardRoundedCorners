@@ -1,25 +1,25 @@
-name: KBRC supplied-source RootHide verification package
+name: KBRC dual-scheme verification packages
 
 'on':
   push:
-    branches: [build/xxhook-ios15-roothide]
+    branches: [build/kbrc-1.0.3-packages]
   workflow_dispatch:
 
 permissions:
   contents: read
 concurrency:
-  group: kbrc-xxhook-${{ github.ref }}
+  group: kbrc-dual-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  roothide-package:
+  device-packages:
     runs-on: macos-15
     timeout-minutes: 25
     defaults:
       run:
         shell: bash
     steps:
-      - name: Checkout exact candidate
+      - name: Checkout exact candidate and accepted baseline
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
@@ -35,18 +35,21 @@ jobs:
           from pathlib import Path
           import json, os, subprocess
           source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          base = '71c6b8597f0646fb57d673293ad832d8de69f3e6'
           assert source == os.environ['GITHUB_SHA']
           assert os.environ['GITHUB_REPOSITORY'] == 'Tsangbaby/KeyboardRoundedCorners'
-          assert os.environ['GITHUB_REF'] == 'refs/heads/build/xxhook-ios15-roothide'
+          assert os.environ['GITHUB_REF'] == 'refs/heads/build/kbrc-1.0.3-packages'
+          for path in ('Tweak.xm', 'KBRCSignature.h', 'scripts/check_host.py', 'tests/signature_test.c'):
+              assert Path(path).read_bytes() == subprocess.check_output(['git', 'show', f'{base}:{path}'])
+          assert Path('kbrc.plist').read_bytes() == subprocess.check_output(['git', 'show', f'{base}:xxhook.plist'])
           fields = dict(line.split(': ', 1) for line in Path('control').read_text().splitlines() if ': ' in line)
           scope = {'source_sha': source, 'repository': os.environ['GITHUB_REPOSITORY'],
-                   'archive_sha256': '001b0b29bb6f6277e7ca464ff2a8007ef54be8521995f968e560fa541a5db122',
-                   'archive_import_commit': '69d7d63665af6244e1006750935027244ed29671',
-                   'protected_predecessor_main': '0a3e33e4e4f88d75936f9d5d6ffda345e35597af',
+                   'device_accepted_baseline': base, 'baseline_device_result': 'USER_REPORTED_PASSED',
                    'package': fields['Package'], 'version': fields['Version'], 'minimum_ios': '15.0',
-                   'schemes': ['roothide'], 'architectures': ['arm64', 'arm64e'],
-                   'functional_verification_build': True, 'device_tested': False,
-                   'diagnostic_package': False, 'simulator_tests': 'NOT_RUN',
+                   'schemes': ['roothide', 'rootless'], 'architectures': ['arm64', 'arm64e'],
+                   'runtime_source_unchanged': True, 'filter_contents_unchanged': True,
+                   'dylib_and_filter_basename': 'kbrc', 'functional_verification_build': True,
+                   'device_tested': False, 'diagnostic_package': False, 'simulator_tests': 'NOT_RUN',
                    'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT']}
           Path('ci-artifacts/BUILD_SCOPE.json').write_text(json.dumps(scope, indent=2) + '\n')
           print(json.dumps(scope))
@@ -64,11 +67,11 @@ jobs:
           {
             python3 -B -m unittest discover -s tests -p 'test_*.py' -v
             python3 -B scripts/check_host.py --case all
-            plutil -lint xxhook.plist
+            plutil -lint kbrc.plist
             git diff --check
           } 2>&1 | tee ci-artifacts/source-host-tests.log
 
-      - name: Set up pinned RootHide Theos and packaging tools
+      - name: Set up pinned dual-scheme Theos and packaging tools
         env:
           HOMEBREW_NO_AUTO_UPDATE: 1
           HOMEBREW_NO_INSTALL_CLEANUP: 1
@@ -83,51 +86,63 @@ jobs:
             test "$(git -C "$THEOS" rev-parse HEAD)" = cfba89a53a05b4a1b822121158acc3669c20602f
             git -C "$THEOS" submodule status --recursive
             test -f "$THEOS/vendor/mod/roothide/package/deb.mk"
+            test -f "$THEOS/vendor/mod/rootless/package/deb.mk"
             printf 'THEOS=%s\n' "$THEOS" >> "$GITHUB_ENV"
             printf '%s\n%s\n' "$(brew --prefix make)/libexec/gnubin" "$THEOS/bin" >> "$GITHUB_PATH"
           } 2>&1 | tee ci-artifacts/theos-setup.log
 
-      - name: Compile link sign and verify RootHide package
+      - name: Compile link sign and verify both requested schemes
         run: |
           set -euo pipefail
           command -v make dpkg-deb ldid
-          make clean THEOS_PACKAGE_SCHEME=roothide
-          make -j2 package THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1 INSTALL=0 SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)" 2>&1 | tee ci-artifacts/theos-build.log
-          package="$(python3 - <<'PY'
+          for scheme in roothide rootless; do
+            make clean THEOS_PACKAGE_SCHEME="$scheme"
+            make -j2 package THEOS_PACKAGE_SCHEME="$scheme" FINALPACKAGE=1 INSTALL=0 SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)" 2>&1 | tee "ci-artifacts/theos-build-$scheme.log"
+            package="$(python3 - "$scheme" <<'PY'
           from pathlib import Path
-          fields = dict(line.split(': ', 1) for line in Path('control').read_text().splitlines() if ': ' in line)
-          expected = Path('packages') / f"{fields['Package']}_{fields['Version']}_iphoneos-arm64e.deb"
-          matches = list(Path('packages').glob('*.deb'))
-          assert matches == [expected], matches
+          import sys
+          sys.path.insert(0, 'scripts')
+          from verify_package import fields, package_layout
+          metadata = fields(Path('control').read_text())
+          architecture, _, _ = package_layout(sys.argv[1])
+          expected = Path('packages') / f"{metadata['Package']}_{metadata['Version']}_{architecture}.deb"
+          assert expected.is_file(), expected
           print(expected)
           PY
-          )"
-          cp "$package" ci-artifacts/
-          python3 -B scripts/verify_package.py "$package" > ci-artifacts/package-verification.json
-          dpkg-deb -c "$package" > ci-artifacts/package-contents.txt
-          payload="$RUNNER_TEMP/kbrc-verified-payload"
-          test ! -e "$payload"
-          dpkg-deb -x "$package" "$payload"
-          dylib="$payload/Library/MobileSubstrate/DynamicLibraries/xxhook.dylib"
-          xcrun lipo "$dylib" -verify_arch arm64 arm64e
-          xcrun lipo -archs "$dylib" > ci-artifacts/architectures.txt
-          xcrun otool -arch all -L "$dylib" > ci-artifacts/dylib-links.txt
-          xcrun otool -arch all -l "$dylib" > ci-artifacts/dylib-load-commands.txt
-          ldid -e "$dylib" > ci-artifacts/entitlements.plist
+            )"
+            cp "$package" ci-artifacts/
+            python3 -B scripts/verify_package.py "$package" --scheme "$scheme" > "ci-artifacts/package-verification-$scheme.json"
+            dpkg-deb -c "$package" > "ci-artifacts/package-contents-$scheme.txt"
+            payload="$RUNNER_TEMP/kbrc-verified-$scheme-payload"
+            test ! -e "$payload"
+            dpkg-deb -x "$package" "$payload"
+            prefix=""
+            if [ "$scheme" = rootless ]; then prefix="var/jb/"; fi
+            dylib="$payload/${prefix}Library/MobileSubstrate/DynamicLibraries/kbrc.dylib"
+            xcrun lipo "$dylib" -verify_arch arm64 arm64e
+            xcrun lipo -archs "$dylib" > "ci-artifacts/architectures-$scheme.txt"
+            xcrun otool -arch all -L "$dylib" > "ci-artifacts/dylib-links-$scheme.txt"
+            xcrun otool -arch all -l "$dylib" > "ci-artifacts/dylib-load-commands-$scheme.txt"
+            ldid -e "$dylib" > "ci-artifacts/entitlements-$scheme.plist"
+          done
           python3 - <<'PY'
           from pathlib import Path
-          import hashlib
+          import hashlib, sys
+          sys.path.insert(0, 'scripts')
+          from verify_package import fields
+          metadata = fields(Path('control').read_text())
           root = Path('ci-artifacts')
           files = sorted(root.glob('*.deb'))
-          assert len(files) == 1
+          expected = {f"{metadata['Package']}_{metadata['Version']}_{arch}.deb" for arch in ('iphoneos-arm64', 'iphoneos-arm64e')}
+          assert len(files) == 2 and {p.name for p in files} == expected, files
           (root / 'SHA256SUMS.txt').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in files))
           PY
 
-      - name: Upload original RootHide package and evidence
+      - name: Upload original dual-scheme packages and evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: kbrc-roothide-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: kbrc-dual-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ci-artifacts/
           if-no-files-found: error
           retention-days: 14
