@@ -60,6 +60,13 @@ class ProjectContractTests(unittest.TestCase):
         self.assertNotIn("simctl", workflow)
         self.assertNotIn("runner.temp", workflow)
 
+    def test_ci_lipo_uses_input_before_verify_arch_and_preserves_original(self):
+        import shlex
+        workflow = (ROOT / ".github/workflows/build.yml").read_text()
+        command = next(line.strip() for line in workflow.splitlines() if line.strip().startswith("xcrun lipo -verify_arch") or ('xcrun lipo "$dylib" -verify_arch' in line))
+        self.assertEqual(shlex.split(command), ["xcrun", "lipo", "$dylib", "-verify_arch", "arm64", "arm64e"])
+        self.assertLess(workflow.index('cp "$package" ci-artifacts/'), workflow.index('python3 -B scripts/verify_package.py "$package"'))
+
     def test_requested_package_identity_and_ios_floor(self):
         fields = control_fields()
         self.assertEqual(fields["Package"], "com.tsangbaby.kbrc")

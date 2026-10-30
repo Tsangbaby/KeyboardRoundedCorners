@@ -102,18 +102,18 @@ jobs:
           print(expected)
           PY
           )"
+          cp "$package" ci-artifacts/
           python3 -B scripts/verify_package.py "$package" > ci-artifacts/package-verification.json
           dpkg-deb -c "$package" > ci-artifacts/package-contents.txt
           payload="$RUNNER_TEMP/kbrc-verified-payload"
           test ! -e "$payload"
           dpkg-deb -x "$package" "$payload"
           dylib="$payload/Library/MobileSubstrate/DynamicLibraries/xxhook.dylib"
-          xcrun lipo -verify_arch arm64 arm64e "$dylib"
+          xcrun lipo "$dylib" -verify_arch arm64 arm64e
           xcrun lipo -archs "$dylib" > ci-artifacts/architectures.txt
           xcrun otool -arch all -L "$dylib" > ci-artifacts/dylib-links.txt
           xcrun otool -arch all -l "$dylib" > ci-artifacts/dylib-load-commands.txt
           ldid -e "$dylib" > ci-artifacts/entitlements.plist
-          cp "$package" ci-artifacts/
           python3 - <<'PY'
           from pathlib import Path
           import hashlib
