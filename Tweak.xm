@@ -1,18 +1,17 @@
 // ============================================================================
-//  xxhook / Tweak.xm
-//  「系统键盘圆角」—— 由 com.wkk.kbhook_1.0-1_iphoneos-arm64e.deb 逆向还原
-//
-//  还原依据：Keyboardhook.dylib 的 __text 只有 68 字节（17 条指令），
-//  完整行为 = 1 个 constructor + 1 个替换函数，无 Logos 类、无偏好、无其他 hook。
-//  逐指令对照见 ../kbhook_逆向分析报告.md
+//  Keyboard Rounded Corners / com.tsangbaby.kbrc / Tsangbaby / iOS 15+
+//  Supplied xxhook source, with narrow build and runtime-safety adaptation.
+//  Original-binary restoration claims were not independently verified;
+//  see docs/SOURCE_PROVENANCE.md and the byte-preserving archive import commit.
 // ============================================================================
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <substrate.h>
+#import <dispatch/dispatch.h>
+#import "KBRCSignature.h"
 
-// 目标键盘按键圆角（pt）。原版硬编码 10.0（机器码 fmov d0,#10.0 @0x7f38）。
-// 改这一个数字即可调圆角大小，重新编译后行为等价于原来那条 fmov。
+// Preserve the supplied source's fixed 10-point keyboard geometry radius.
 #define KB_CORNER_RADIUS 10.0
 
 // 私有类：UIKit/UIKeyboard 的按键渲染几何信息。
@@ -22,29 +21,60 @@
 @property (nonatomic) CGFloat roundRectRadius;
 @end
 
-// 原实现指针。Substrate 的 MSHookMessageEx 第 4 参数写入这里
-// （对应二进制 __DATA.__bss @0xc020）。
+// Substrate writes the saved original implementation through argument four.
 static void (*orig_setRoundRectRadius)(id, SEL, CGFloat);
 
-// 替换函数（对应二进制 0x7f30）。
-// 原版逻辑：完全忽略系统传入的 radius，强制改成 10.0 再交给原实现。
+// Forward exactly once with unchanged receiver / selector and fixed radius.
 static void kb_setRoundRectRadius(id self, SEL _cmd, CGFloat radius) {
-    orig_setRoundRectRadius(self, _cmd, KB_CORNER_RADIUS);
+    (void)radius;
+    if (orig_setRoundRectRadius) {
+        orig_setRoundRectRadius(self, _cmd, KB_CORNER_RADIUS);
+    }
 }
 
-// 对应二进制 0x7efc（__DATA_CONST.__mod_init_func 指向它）。
-%ctor {
-    Class cls = objc_getClass("UIKBRenderGeometry");
-
-    // [加固] 原版无此判空，cls 为 nil 时 MSHookMessageEx 可能崩溃。
-    // 行为上与原文一致（正常系统上 cls 恒非 nil），仅避免未来 iOS 改类名时炸掉。
+// Keep the supplied single-hook behavior, but refuse unknown private ABIs.
+static void kb_installHook(Class cls) {
     if (!cls) {
-        NSLog(@"[xxhook] UIKBRenderGeometry not found, skip hook.");
+        NSLog(@"[KBRC] UIKBRenderGeometry unavailable; hook skipped.");
+        return;
+    }
+
+    SEL selector = @selector(setRoundRectRadius:);
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method || method_getNumberOfArguments(method) != 3) {
+        NSLog(@"[KBRC] Keyboard radius setter unavailable; hook skipped.");
+        return;
+    }
+
+    char returnType[8] = {0};
+    char receiverType[8] = {0};
+    char selectorType[8] = {0};
+    char radiusType[8] = {0};
+    method_getReturnType(method, returnType, sizeof(returnType));
+    method_getArgumentType(method, 0, receiverType, sizeof(receiverType));
+    method_getArgumentType(method, 1, selectorType, sizeof(selectorType));
+    method_getArgumentType(method, 2, radiusType, sizeof(radiusType));
+    if (!KBRCSignatureMatches(method_getNumberOfArguments(method),
+                              returnType, receiverType, selectorType,
+                              radiusType, @encode(CGFloat))) {
+        NSLog(@"[KBRC] Keyboard radius setter ABI mismatch; hook skipped.");
         return;
     }
 
     MSHookMessageEx(cls,
-                    @selector(setRoundRectRadius:),
+                    selector,
                     (IMP)kb_setRoundRectRadius,
                     (IMP *)&orig_setRoundRectRadius);
+}
+
+%ctor {
+    Class cls = objc_getClass("UIKBRenderGeometry");
+    if (cls) {
+        kb_installHook(cls);
+    } else {
+        // One bounded retry after UIKit startup; no polling or class scanning.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            kb_installHook(objc_getClass("UIKBRenderGeometry"));
+        });
+    }
 }

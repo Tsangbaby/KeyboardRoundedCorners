@@ -1,9 +1,10 @@
-Package: com.wkk.kbhook
+Package: com.tsangbaby.kbrc
 Name: 系统键盘圆角
-Description: cool
-Maintainer: wkk
-Author: wkk
+Description: Sets iOS system keyboard render geometry corners to 10 pt. Requires iOS 15 or later.
+Maintainer: Tsangbaby
+Author: Tsangbaby
 Section: Tweaks
-Depends: mobilesubstrate (>= 0.9.5000)
+Architecture: iphoneos-arm64e
+Depends: firmware (>= 15.0), mobilesubstrate (>= 0.9.5000)
 Version: 1.0-1
 Icon: https://s1.imagehub.cc/images/2025/12/26/29fda3e52ac78c6958ecf3b5dac18673.png

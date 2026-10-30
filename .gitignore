@@ -13,3 +13,8 @@ packages/
 Thumbs.db
 .vscode/
 .idea/
+
+# Host tests and CI evidence
+__pycache__/
+*.pyc
+ci-artifacts/
