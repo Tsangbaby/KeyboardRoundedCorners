@@ -1,10 +1,9 @@
 Package: com.tsangbaby.kbrc
 Name: 系统键盘圆角
-Description: Sets iOS system keyboard render geometry corners to 10 pt. Requires iOS 15 or later.
+Description: 调整系统键盘按键圆角，让键盘外观更加圆润、简洁。需要 iOS 15 或更高版本。
 Maintainer: Tsangbaby
 Author: Tsangbaby
 Section: Tweaks
 Architecture: iphoneos-arm64e
 Depends: firmware (>= 15.0), mobilesubstrate (>= 0.9.5000)
-Version: 1.0-1
-Icon: https://s1.imagehub.cc/images/2025/12/26/29fda3e52ac78c6958ecf3b5dac18673.png
+Version: 1.0.3

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only verification of this project's original RootHide .deb."""
+"""Read-only verification of original RootHide and Rootless packages."""
 from pathlib import Path, PurePosixPath
 import argparse
 import hashlib
@@ -39,19 +39,31 @@ def inspect_tar(data):
         return result
 
 
-def verify(package):
+def package_layout(scheme):
+    if scheme == "roothide":
+        architecture, prefix = "iphoneos-arm64e", ""
+    elif scheme == "rootless":
+        architecture, prefix = "iphoneos-arm64", "var/jb/"
+    else:
+        raise ValueError(f"Unsupported package scheme: {scheme}")
+    directory = prefix + "Library/MobileSubstrate/DynamicLibraries/"
+    return architecture, directory + "kbrc.dylib", directory + "kbrc.plist"
+
+
+def verify(package, scheme):
     expected = fields((ROOT / "control").read_text())
     actual = fields(subprocess.check_output(["dpkg-deb", "-f", str(package)], text=True))
-    for key in ("Package", "Version", "Author", "Maintainer", "Depends"):
+    for key in ("Package", "Version", "Name", "Description", "Author", "Maintainer", "Depends"):
         assert actual[key] == expected[key], (key, actual.get(key), expected[key])
-    assert actual["Architecture"] == "iphoneos-arm64e", actual
+    architecture, dylib, filter_path = package_layout(scheme)
+    assert actual["Architecture"] == architecture, actual
+    assert "Icon" not in actual, actual
     assert "firmware (>= 15.0)" in actual["Depends"]
     payload = inspect_tar(subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(package)]))
     control = inspect_tar(subprocess.check_output(["dpkg-deb", "--ctrl-tarfile", str(package)]))
-    dylib = "Library/MobileSubstrate/DynamicLibraries/xxhook.dylib"
-    filter_path = "Library/MobileSubstrate/DynamicLibraries/xxhook.plist"
     assert set(payload) == {dylib, filter_path}, list(payload)
-    assert not any(path.startswith("var/jb/") for path in payload)
+    if scheme == "roothide":
+        assert not any(path.startswith("var/jb/") for path in payload)
     filter_value = plistlib.loads(payload[filter_path]["data"])
     assert filter_value == {"Filter": {"Bundles": ["com.apple.UIKit"]}}, filter_value
     assert payload[dylib]["data"][:4] in (b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf"), "expected universal Mach-O"
@@ -60,7 +72,7 @@ def verify(package):
             assert control[script]["mode"] == 0o755, (script, control[script]["mode"])
             assert control[script]["data"].startswith(b"#!/"), script
     data = package.read_bytes()
-    return {"package_file": str(package), "scheme": "roothide", "size": len(data),
+    return {"package_file": str(package), "scheme": scheme, "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(), "metadata": actual,
             "payload": {path: {k: v for k, v in value.items() if k != "data"} for path, value in payload.items()},
             "control_members": {path: {k: v for k, v in value.items() if k != "data"} for path, value in control.items()},
@@ -70,8 +82,9 @@ def verify(package):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package", type=Path)
+    parser.add_argument("--scheme", choices=("roothide", "rootless"), required=True)
     args = parser.parse_args()
-    print(json.dumps(verify(args.package), ensure_ascii=False, indent=2))
+    print(json.dumps(verify(args.package, args.scheme), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
